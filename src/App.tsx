@@ -1081,7 +1081,7 @@ export default function App() {
                       type="password"
                       value={apiKey}
                       onChange={(e) => setApiKey(e.target.value)}
-                      placeholder="sk-..."
+                      placeholder="your-api-key..."
                       className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none transition-all"
                     />
                     <button 
