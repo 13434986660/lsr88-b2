@@ -53,12 +53,19 @@ ${rawTitles}
     })
   });
 
-  if (!response.ok) {
-    const errorData = await response.json();
-    throw new Error(errorData.error || errorData.message || `HTTP error! status: ${response.status}`);
+  const text = await response.text();
+  let data;
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch (e) {
+    console.error("Failed to parse response JSON. Raw text:", text);
+    throw new Error("Invalid JSON response from server. The server might be misconfigured.");
   }
 
-  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.error || data.message || `HTTP error! status: ${response.status}`);
+  }
+
   if (!data.choices || data.choices.length === 0) {
     console.error('API Error Response:', data);
     throw new Error(data.error?.message || 'No choices found in API response');
@@ -130,12 +137,19 @@ ${mustIncludeKeywords ? `必含词库（必须出现在每个标题中）：\n${
     })
   });
 
-  if (!response.ok) {
-    const errorData = await response.json();
-    throw new Error(errorData.error || errorData.message || `HTTP error! status: ${response.status}`);
+  const text = await response.text();
+  let data;
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch (e) {
+    console.error("Failed to parse response JSON. Raw text:", text);
+    throw new Error("Invalid JSON response from server. The server might be misconfigured.");
   }
 
-  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.error || data.message || `HTTP error! status: ${response.status}`);
+  }
+
   if (!data.choices || data.choices.length === 0) {
     console.error('API Error Response:', data);
     throw new Error(data.error?.message || 'No choices found in API response');

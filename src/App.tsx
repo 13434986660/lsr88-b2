@@ -78,7 +78,8 @@ export default function App() {
     const loadConfig = async () => {
       try {
         const response = await fetch('/api/config');
-        const data = await response.json();
+        const text = await response.text();
+        const data = text ? JSON.parse(text) : {};
         if (data.baseUrl) setBaseUrl(data.baseUrl);
         if (data.apiKey) setApiKey(data.apiKey);
         if (data.selectedModel) setSelectedModel(data.selectedModel);
@@ -1081,7 +1082,7 @@ export default function App() {
                       type="password"
                       value={apiKey}
                       onChange={(e) => setApiKey(e.target.value)}
-                      placeholder="your-api-key..."
+                      placeholder="sk-..."
                       className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none transition-all"
                     />
                     <button 
