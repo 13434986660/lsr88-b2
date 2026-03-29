@@ -1,0 +1,23 @@
+{
+  "baseUrl": "https://api.openai.com/v1",
+  "apiKey": "在此填入你的 API Key",
+  "selectedModel": "gpt-4o",
+  "models": ["gpt-4o", "gpt-3.5-turbo"],
+  "presets": {},
+  "keywords": {
+    "风格": [],
+    "产品功能": [],
+    "材质": [],
+    "品类": [],
+    "人群": [],
+    "场景": []
+  },
+  "mustIncludeKeywords": {
+    "风格": [],
+    "产品功能": [],
+    "材质": [],
+    "品类": [],
+    "人群": [],
+    "场景": []
+  }
+}

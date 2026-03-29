@@ -43,14 +43,23 @@ async function startServer() {
     try {
       console.log(`Proxying ${method || 'POST'} request to: ${url}`);
       
-      const response = await fetch(url, {
-        method: method || "POST",
-        headers: {
-          ...headers,
-          "Content-Type": "application/json",
-        },
-        body: body ? JSON.stringify(body) : undefined,
-      });
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 30000);
+      
+      let response;
+      try {
+        response = await fetch(url, {
+          method: method || "POST",
+          headers: {
+            ...headers,
+            "Content-Type": "application/json",
+          },
+          body: body ? JSON.stringify(body) : undefined,
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timeout);
+      }
 
       console.log(`Upstream response status: ${response.status}`);
       const text = await response.text();
@@ -64,10 +73,11 @@ async function startServer() {
         data = { error: "Invalid JSON response from upstream", raw: text };
       }
       res.status(response.status).json(data);
-    } catch (error) {
+    } catch (error: any) {
       console.error("Proxy error:", error);
-      res.status(500).json({ 
-        error: "Proxy request failed", 
+      const isTimeout = error?.name === 'AbortError';
+      res.status(isTimeout ? 504 : 500).json({ 
+        error: isTimeout ? "上游请求超时（30秒）" : "Proxy request failed", 
         message: error instanceof Error ? error.message : String(error) 
       });
     }

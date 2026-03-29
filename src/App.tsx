@@ -12,6 +12,8 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { generateTitles, extractKeywords } from './services/titleService';
+import { addLog } from './services/logService';
+import DebugPanel from './components/DebugPanel';
 
 export default function App() {
   const [configOpen, setConfigOpen] = useState(false);
@@ -76,6 +78,7 @@ export default function App() {
   // Load config from server on mount
   useEffect(() => {
     const loadConfig = async () => {
+      addLog('info', '系统', '应用启动，正在加载配置...');
       try {
         const response = await fetch('/api/config');
         const text = await response.text();
@@ -87,8 +90,9 @@ export default function App() {
         if (data.presets) setPresets(data.presets);
         if (data.keywords && Object.keys(data.keywords).length > 0) setKeywords(data.keywords);
         if (data.mustIncludeKeywords) setMustIncludeKeywords(data.mustIncludeKeywords);
+        addLog('success', '系统', '配置加载完成', `模型: ${data.selectedModel || '未设置'} | API: ${data.baseUrl || '未设置'}`);
       } catch (error) {
-        console.error('Failed to load config:', error);
+        addLog('error', '系统', '配置加载失败', error instanceof Error ? error.message : String(error));
       }
     };
     loadConfig();
@@ -96,18 +100,20 @@ export default function App() {
 
   const saveConfig = async () => {
     setSavingConfig(true);
+    addLog('info', '配置', '正在保存配置...');
     try {
       await fetch('/api/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ baseUrl, apiKey, selectedModel, models, presets, keywords, mustIncludeKeywords })
       });
+      addLog('success', '配置', '配置保存成功');
       setTimeout(() => {
         setSavingConfig(false);
         setConfigOpen(false);
       }, 500);
     } catch (error) {
-      console.error('Failed to save config:', error);
+      addLog('error', '配置', '配置保存失败', error instanceof Error ? error.message : String(error));
       setGlobalError({
         title: '保存失败',
         message: '保存配置到服务器时发生错误，请检查网络。'
@@ -170,12 +176,14 @@ export default function App() {
 
   const handleExtract = async () => {
     if (!apiKey || !selectedModel) {
+      addLog('warn', '提取', '未配置 API Key 或模型，请先完成设置');
       setConfigOpen(true);
       return;
     }
     if (!rawTitles.trim()) return;
     
     setExtracting(true);
+    addLog('info', '提取', '用户点击「提取核心关键词」');
     try {
       const result = await extractKeywords(
         { baseUrl, apiKey, model: selectedModel },
@@ -183,7 +191,6 @@ export default function App() {
       );
       setKeywords(result);
     } catch (error) {
-      console.error(error);
       setGlobalError({
         title: '提取失败',
         message: error instanceof Error ? error.message : '提取关键词时发生未知错误，请检查 API 配置。',
@@ -196,6 +203,7 @@ export default function App() {
 
   const handleGenerate = async () => {
     if (!apiKey || !selectedModel) {
+      addLog('warn', '生成', '未配置 API Key 或模型，请先完成设置');
       setGlobalError({
         title: '配置未完成',
         message: '请先在设置中配置 API Key 和选择模型。'
@@ -204,11 +212,11 @@ export default function App() {
       return;
     }
 
-    // Validation
     const hasCategory = keywords['品类'] && keywords['品类'].length > 0;
     const hasMaterial = keywords['材质'] && keywords['材质'].length > 0;
 
     if (!hasCategory || !hasMaterial) {
+      addLog('warn', '生成', '素材不足：缺少"品类"或"材质"');
       setGlobalError({
         title: '素材不足',
         message: '生成标题缺少产品“品类”或“材质”，请正确添加。这两类词汇是生成标题的必要素材。'
@@ -220,6 +228,7 @@ export default function App() {
     const totalLength = allWords.join('').length;
     
     if (totalLength < 10) {
+      addLog('warn', '生成', `素材总字数不足: ${totalLength} < 10`);
       setGlobalError({
         title: '素材过少',
         message: '当前素材词库中的关键词总字数太少（不足10字），请增加更多关键词以生成高质量标题。'
@@ -235,18 +244,21 @@ export default function App() {
     
     let allTitles: string[] = [];
     let requestIteration = 0;
+    const genStartTime = Date.now();
+
+    addLog('info', '生成', `开始生成标题，目标 ${count} 条，最多 ${maxRequests} 轮`, `模型: ${selectedModel} | 素材词: ${allWords.length} 个 (${totalLength} 字)`);
 
     try {
       while (allTitles.length < count && requestIteration < maxRequests) {
         if (stopRef.current) {
-          console.log('Generation stopped by user');
+          addLog('warn', '生成', `用户手动停止，已完成 ${allTitles.length}/${count} 条`);
           break;
         }
 
         requestIteration++;
         setCurrentRequestCount(requestIteration);
+        addLog('info', '生成', `第 ${requestIteration} 轮请求 (已有 ${allTitles.length}/${count} 条)`);
         
-        // Request 10 titles each time to have enough candidates to filter from
         const batchSize = 10;
         
         const batch = await generateTitles(
@@ -258,19 +270,20 @@ export default function App() {
         
         if (stopRef.current) break;
 
-        // Deduplicate and filter
         const newUniqueTitles = batch.filter(t => !allTitles.includes(t));
+        const duplicateCount = batch.length - newUniqueTitles.length;
         
         if (newUniqueTitles.length > 0) {
-          // Waterfall update: add only up to the remaining required count
           const remainingNeeded = count - allTitles.length;
           const titlesToAdd = newUniqueTitles.slice(0, remainingNeeded);
           
           allTitles = [...allTitles, ...titlesToAdd];
-          setGeneratedTitles([...allTitles]); // Trigger UI update for waterfall effect
+          setGeneratedTitles([...allTitles]);
+          addLog('info', '生成', `第 ${requestIteration} 轮: +${titlesToAdd.length} 条新标题 (去重 ${duplicateCount})，累计 ${allTitles.length}/${count}`);
+        } else {
+          addLog('warn', '生成', `第 ${requestIteration} 轮: 0 条新标题（全部重复或不合格）`);
         }
 
-        // If we still need more, wait a bit to avoid aggressive looping
         if (allTitles.length < count) {
           await new Promise(resolve => setTimeout(resolve, 800));
         } else {
@@ -278,17 +291,22 @@ export default function App() {
         }
       }
       
+      const elapsed = ((Date.now() - genStartTime) / 1000).toFixed(1);
       if (allTitles.length === 0) {
+        addLog('error', '生成', `结果为空，${requestIteration} 轮请求，耗时 ${elapsed}s`);
         setGlobalError({
           title: '生成结果为空',
           message: 'AI 已响应但未能生成符合字数要求（29-30字）的标题。请尝试增加关键词或更换模型。'
         });
       } else if (allTitles.length < count) {
-        console.warn(`Reached max requests (${maxRequests}) before meeting target count (${count})`);
+        addLog('warn', '生成', `部分完成: ${allTitles.length}/${count} 条，达到上限 ${maxRequests} 轮，耗时 ${elapsed}s`);
+      } else {
+        addLog('success', '生成', `✓ 全部完成: ${allTitles.length} 条标题，${requestIteration} 轮请求，耗时 ${elapsed}s`);
       }
       
     } catch (error) {
-      console.error(error);
+      const elapsed = ((Date.now() - genStartTime) / 1000).toFixed(1);
+      addLog('error', '生成', `生成中断 (${elapsed}s): ${error instanceof Error ? error.message : String(error)}`);
       setGlobalError({
         title: '生成失败',
         message: error instanceof Error ? error.message : '未知错误，请检查网络或 API 配置。',
@@ -302,6 +320,7 @@ export default function App() {
   };
 
   const handleStop = () => {
+    addLog('warn', '生成', '用户点击「停止生成」');
     setIsStopping(true);
     stopRef.current = true;
   };
@@ -1375,6 +1394,9 @@ export default function App() {
           </div>
         )}
       </AnimatePresence>
+      {/* Debug Panel */}
+      <DebugPanel />
+
       {/* Error Modal */}
       <AnimatePresence>
         {globalError && (
