@@ -91,69 +91,102 @@ export default function App() {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [viewingHistory, setViewingHistory] = useState<HistoryEntry | null>(null);
 
+  const STORAGE_KEY_CONFIG = 'app_config';
+  const STORAGE_KEY_HISTORY = 'app_history';
+
   const buildConfigPayload = () => ({ baseUrl, apiKey, selectedModel, models, presets, keywords, mustIncludeKeywords });
 
-  // Load config from server on mount
+  const persistConfig = (payload: ReturnType<typeof buildConfigPayload>) => {
+    try { localStorage.setItem(STORAGE_KEY_CONFIG, JSON.stringify(payload)); } catch (_) {}
+    fetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).catch(() => {});
+  };
+
+  const persistHistory = (list: HistoryEntry[]) => {
+    try { localStorage.setItem(STORAGE_KEY_HISTORY, JSON.stringify(list)); } catch (_) {}
+  };
+
+  // Load config on mount: localStorage first, then try server API to merge
   useEffect(() => {
     let cancelled = false;
+    const applyConfig = (data: any) => {
+      if (data.baseUrl) setBaseUrl(data.baseUrl);
+      if (data.apiKey) setApiKey(data.apiKey);
+      if (data.selectedModel) setSelectedModel(data.selectedModel);
+      if (data.models) setModels(data.models);
+      if (data.presets) setPresets(data.presets);
+      if (data.keywords && Object.keys(data.keywords).length > 0) setKeywords(data.keywords);
+      if (data.mustIncludeKeywords) setMustIncludeKeywords(data.mustIncludeKeywords);
+    };
+
     const loadConfig = async () => {
       addLog('info', '系统', '应用启动，正在加载配置...');
-      try {
-        const response = await fetch('/api/config');
-        const text = await response.text();
-        const data = text ? JSON.parse(text) : {};
-        if (cancelled) return;
-        if (data.baseUrl) setBaseUrl(data.baseUrl);
-        if (data.apiKey) setApiKey(data.apiKey);
-        if (data.selectedModel) setSelectedModel(data.selectedModel);
-        if (data.models) setModels(data.models);
-        if (data.presets) setPresets(data.presets);
-        if (data.keywords && Object.keys(data.keywords).length > 0) setKeywords(data.keywords);
-        if (data.mustIncludeKeywords) setMustIncludeKeywords(data.mustIncludeKeywords);
-        addLog('success', '系统', '配置加载完成', `模型: ${data.selectedModel || '未设置'} | API: ${data.baseUrl || '未设置'}`);
 
-        loadedConfigSnapshot.current = JSON.stringify({
-          baseUrl: data.baseUrl || 'https://api.openai.com/v1',
-          apiKey: data.apiKey || '',
-          selectedModel: data.selectedModel || 'gpt-4o',
-          models: data.models || ['gpt-3.5-turbo', 'gpt-4o', 'gpt-4-turbo'],
-          presets: data.presets || {},
-          keywords: data.keywords && Object.keys(data.keywords).length > 0
-            ? data.keywords
-            : { '风格': [], '产品功能': [], '材质': [], '品类': [], '人群': [], '场景': [] },
-          mustIncludeKeywords: data.mustIncludeKeywords || { '风格': [], '产品功能': [], '材质': [], '品类': [], '人群': [], '场景': [] },
-        });
-        configLoadedRef.current = true;
-      } catch (error) {
-        if (cancelled) return;
-        addLog('error', '系统', '配置加载失败', error instanceof Error ? error.message : String(error));
-        configLoadedRef.current = true;
+      let localData: any = null;
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY_CONFIG);
+        if (raw) localData = JSON.parse(raw);
+      } catch (_) {}
+
+      if (localData) {
+        if (!cancelled) applyConfig(localData);
+        addLog('success', '系统', '从浏览器缓存加载配置', `模型: ${localData.selectedModel || '未设置'}`);
       }
 
       try {
-        const hRes = await fetch('/api/history');
-        const hData = await hRes.json();
-        if (!cancelled && Array.isArray(hData)) setHistoryList(hData);
+        const response = await fetch('/api/config');
+        if (response.ok) {
+          const text = await response.text();
+          const serverData = text ? JSON.parse(text) : {};
+          if (!cancelled && serverData && Object.keys(serverData).length > 0) {
+            if (!localData) {
+              applyConfig(serverData);
+              addLog('success', '系统', '从服务端加载配置', `模型: ${serverData.selectedModel || '未设置'}`);
+              try { localStorage.setItem(STORAGE_KEY_CONFIG, JSON.stringify(serverData)); } catch (_) {}
+            }
+          }
+        }
       } catch (_) {}
+
+      if (!cancelled) {
+        loadedConfigSnapshot.current = JSON.stringify(buildConfigPayload());
+        configLoadedRef.current = true;
+      }
+
+      let localHistory: any = null;
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY_HISTORY);
+        if (raw) localHistory = JSON.parse(raw);
+      } catch (_) {}
+      if (!cancelled && Array.isArray(localHistory) && localHistory.length > 0) {
+        setHistoryList(localHistory);
+      } else {
+        try {
+          const hRes = await fetch('/api/history');
+          if (hRes.ok) {
+            const hData = await hRes.json();
+            if (!cancelled && Array.isArray(hData) && hData.length > 0) {
+              setHistoryList(hData);
+              try { localStorage.setItem(STORAGE_KEY_HISTORY, JSON.stringify(hData)); } catch (_) {}
+            }
+          }
+        } catch (_) {}
+      }
     };
     loadConfig();
     return () => { cancelled = true; };
   }, []);
 
-  const doSaveConfig = async (payload: ReturnType<typeof buildConfigPayload>) => {
-    await fetch('/api/config', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    loadedConfigSnapshot.current = JSON.stringify(payload);
-  };
-
   const saveConfig = async () => {
     setSavingConfig(true);
     addLog('info', '配置', '正在保存配置...');
     try {
-      await doSaveConfig(buildConfigPayload());
+      const payload = buildConfigPayload();
+      persistConfig(payload);
+      loadedConfigSnapshot.current = JSON.stringify(payload);
       addLog('success', '配置', '配置保存成功');
       setTimeout(() => {
         setSavingConfig(false);
@@ -163,7 +196,7 @@ export default function App() {
       addLog('error', '配置', '配置保存失败', error instanceof Error ? error.message : String(error));
       setGlobalError({
         title: '保存失败',
-        message: '保存配置到服务器时发生错误，请检查网络。'
+        message: '保存配置时发生错误。'
       });
       setSavingConfig(false);
     }
@@ -175,7 +208,8 @@ export default function App() {
     const snapshot = JSON.stringify(payload);
     if (snapshot === loadedConfigSnapshot.current) return;
     const timer = setTimeout(() => {
-      doSaveConfig(payload).catch(() => {});
+      persistConfig(payload);
+      loadedConfigSnapshot.current = snapshot;
     }, 1000);
     return () => clearTimeout(timer);
   }, [baseUrl, apiKey, selectedModel, models, keywords, mustIncludeKeywords, presets]);
@@ -363,7 +397,11 @@ export default function App() {
           model: selectedModel,
           titles: [...allTitles],
         };
-        setHistoryList(prev => [entry, ...prev]);
+        setHistoryList(prev => {
+          const updated = [entry, ...prev];
+          persistHistory(updated);
+          return updated;
+        });
         fetch('/api/history', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1603,7 +1641,11 @@ export default function App() {
                           <button
                             onClick={async () => {
                               if (!window.confirm(`确定删除记录「${entry.name}」？`)) return;
-                              setHistoryList(prev => prev.filter(h => h.id !== entry.id));
+                              setHistoryList(prev => {
+                                const updated = prev.filter(h => h.id !== entry.id);
+                                persistHistory(updated);
+                                return updated;
+                              });
                               fetch(`/api/history/${entry.id}`, { method: 'DELETE' }).catch(() => {});
                             }}
                             className="text-slate-300 hover:text-red-500 p-1 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
