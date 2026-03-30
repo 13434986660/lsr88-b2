@@ -8,7 +8,8 @@ import {
   Settings, Copy, Sparkles, Loader2, Save, RefreshCw, 
   Search, Check, X, Plus, Trash2, Edit3, ChevronDown, 
   Zap, Package, Users, MapPin, Palette, Wand2,
-  ExternalLink, Github, Download, Cloud, MousePointer2, Upload
+  ExternalLink, Github, Download, Cloud, MousePointer2, Upload,
+  History, Clock, FileText, Eye
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { generateTitles, extractKeywords } from './services/titleService';
@@ -16,6 +17,7 @@ import { addLog } from './services/logService';
 import DebugPanel from './components/DebugPanel';
 
 export default function App() {
+  const configLoadedRef = React.useRef(false);
   const [configOpen, setConfigOpen] = useState(false);
   const [baseUrl, setBaseUrl] = useState('https://api.openai.com/v1');
   const [apiKey, setApiKey] = useState('');
@@ -75,6 +77,19 @@ export default function App() {
   const [globalError, setGlobalError] = useState<{ title: string, message: string, details?: string } | null>(null);
   const [showErrorDetails, setShowErrorDetails] = useState(false);
 
+  // History
+  interface HistoryEntry {
+    id: string;
+    name: string;
+    date: string;
+    count: number;
+    model: string;
+    titles: string[];
+  }
+  const [historyList, setHistoryList] = useState<HistoryEntry[]>([]);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [viewingHistory, setViewingHistory] = useState<HistoryEntry | null>(null);
+
   // Load config from server on mount
   useEffect(() => {
     const loadConfig = async () => {
@@ -91,12 +106,30 @@ export default function App() {
         if (data.keywords && Object.keys(data.keywords).length > 0) setKeywords(data.keywords);
         if (data.mustIncludeKeywords) setMustIncludeKeywords(data.mustIncludeKeywords);
         addLog('success', '系统', '配置加载完成', `模型: ${data.selectedModel || '未设置'} | API: ${data.baseUrl || '未设置'}`);
+        configLoadedRef.current = true;
       } catch (error) {
         addLog('error', '系统', '配置加载失败', error instanceof Error ? error.message : String(error));
+        configLoadedRef.current = true;
       }
+
+      try {
+        const hRes = await fetch('/api/history');
+        const hData = await hRes.json();
+        if (Array.isArray(hData)) setHistoryList(hData);
+      } catch (_) {}
     };
     loadConfig();
   }, []);
+
+  const saveConfigSilent = async () => {
+    try {
+      await fetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ baseUrl, apiKey, selectedModel, models, presets, keywords, mustIncludeKeywords })
+      });
+    } catch (_) {}
+  };
 
   const saveConfig = async () => {
     setSavingConfig(true);
@@ -121,6 +154,12 @@ export default function App() {
       setSavingConfig(false);
     }
   };
+
+  useEffect(() => {
+    if (!configLoadedRef.current) return;
+    const timer = setTimeout(() => { saveConfigSilent(); }, 800);
+    return () => clearTimeout(timer);
+  }, [baseUrl, apiKey, selectedModel, models, keywords, mustIncludeKeywords, presets]);
 
   const fetchModels = async () => {
     if (!apiKey) return;
@@ -292,6 +331,28 @@ export default function App() {
       }
       
       const elapsed = ((Date.now() - genStartTime) / 1000).toFixed(1);
+
+      if (allTitles.length > 0) {
+        const now = new Date();
+        const pad = (n: number) => String(n).padStart(2, '0');
+        const dateName = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+        const entry: HistoryEntry = {
+          id: `h_${Date.now()}`,
+          name: `${dateName}（${allTitles.length}条）`,
+          date: now.toISOString(),
+          count: allTitles.length,
+          model: selectedModel,
+          titles: [...allTitles],
+        };
+        setHistoryList(prev => [entry, ...prev]);
+        fetch('/api/history', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(entry),
+        }).catch(() => {});
+        addLog('info', '历史', `已保存生成记录: ${entry.name}`);
+      }
+
       if (allTitles.length === 0) {
         addLog('error', '生成', `结果为空，${requestIteration} 轮请求，耗时 ${elapsed}s`);
         setGlobalError({
@@ -970,6 +1031,16 @@ export default function App() {
             <div className="flex items-center justify-between mb-6">
               <div className="flex items-center gap-4">
                 <h2 className="text-lg font-semibold">生成结果</h2>
+                <button
+                  onClick={() => setHistoryOpen(true)}
+                  className="text-xs bg-slate-100 hover:bg-slate-200 text-slate-600 px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-all font-medium"
+                >
+                  <History size={14} />
+                  历史记录
+                  {historyList.length > 0 && (
+                    <span className="bg-slate-300 text-slate-700 text-[10px] px-1.5 py-0.5 rounded-full">{historyList.length}</span>
+                  )}
+                </button>
                 {generatedTitles.length > 0 && (
                   <div className="flex items-center gap-2 px-3 py-1 bg-slate-100 rounded-full">
                     <input 
@@ -1396,6 +1467,140 @@ export default function App() {
       </AnimatePresence>
       {/* Debug Panel */}
       <DebugPanel />
+
+      {/* History Modal */}
+      <AnimatePresence>
+        {historyOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => { setHistoryOpen(false); setViewingHistory(null); }}
+              className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm"
+            />
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="relative bg-white w-full max-w-2xl rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh]"
+            >
+              <div className="p-6 border-b border-slate-100 flex items-center justify-between bg-slate-50">
+                <div className="flex items-center gap-2">
+                  <History size={20} className="text-blue-600" />
+                  <h3 className="text-xl font-bold">
+                    {viewingHistory ? viewingHistory.name : '历史生成记录'}
+                  </h3>
+                </div>
+                <div className="flex items-center gap-2">
+                  {viewingHistory && (
+                    <button 
+                      onClick={() => setViewingHistory(null)}
+                      className="text-xs bg-slate-200 hover:bg-slate-300 px-3 py-1.5 rounded-lg transition-colors"
+                    >
+                      ← 返回列表
+                    </button>
+                  )}
+                  <button onClick={() => { setHistoryOpen(false); setViewingHistory(null); }} className="p-2 hover:bg-white rounded-full transition-colors">
+                    <X size={20} />
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-6">
+                {viewingHistory ? (
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between mb-4">
+                      <div className="flex items-center gap-3 text-xs text-slate-500">
+                        <span className="flex items-center gap-1"><Clock size={12} /> {new Date(viewingHistory.date).toLocaleString('zh-CN')}</span>
+                        <span className="bg-blue-100 text-blue-700 px-2 py-0.5 rounded">{viewingHistory.model}</span>
+                        <span>{viewingHistory.count} 条</span>
+                      </div>
+                      <button
+                        onClick={() => {
+                          navigator.clipboard.writeText(viewingHistory.titles.join('\n'));
+                          alert('已复制全部标题到剪贴板');
+                        }}
+                        className="text-xs bg-blue-50 text-blue-600 px-3 py-1.5 rounded-lg font-bold hover:bg-blue-100 transition-colors flex items-center gap-1"
+                      >
+                        <Copy size={14} /> 全部复制
+                      </button>
+                    </div>
+                    {viewingHistory.titles.map((title, i) => (
+                      <div key={i} className="group flex items-start gap-3 p-3 bg-slate-50 rounded-xl hover:bg-white border border-transparent hover:border-slate-200 transition-all">
+                        <span className="text-[10px] text-slate-400 font-mono mt-1 shrink-0 w-5 text-right">{i + 1}</span>
+                        <p className="text-sm flex-1">{title}</p>
+                        <span className="text-[10px] font-mono bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded shrink-0">{title.length}字</span>
+                        <button
+                          onClick={() => { navigator.clipboard.writeText(title); }}
+                          className="text-slate-300 hover:text-blue-600 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+                        >
+                          <Copy size={14} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : historyList.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center py-20 text-slate-300">
+                    <FileText size={48} strokeWidth={1} />
+                    <p className="mt-4 text-sm">暂无生成记录</p>
+                    <p className="text-xs mt-1">生成标题后会自动保存到这里</p>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {historyList.map((entry) => (
+                      <div key={entry.id} className="group flex items-center justify-between p-4 bg-slate-50 rounded-xl hover:bg-white border border-transparent hover:border-slate-200 transition-all">
+                        <div
+                          className="flex-1 cursor-pointer flex items-center gap-4"
+                          onClick={() => setViewingHistory(entry)}
+                        >
+                          <div className="bg-blue-100 p-2 rounded-lg shrink-0">
+                            <FileText size={18} className="text-blue-600" />
+                          </div>
+                          <div>
+                            <p className="text-sm font-semibold text-slate-700">{entry.name}</p>
+                            <div className="flex items-center gap-3 mt-1 text-[10px] text-slate-400">
+                              <span className="flex items-center gap-1"><Clock size={10} /> {new Date(entry.date).toLocaleString('zh-CN')}</span>
+                              <span className="bg-slate-200 text-slate-600 px-1.5 py-0.5 rounded">{entry.model}</span>
+                            </div>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => setViewingHistory(entry)}
+                            className="text-xs text-blue-600 hover:bg-blue-50 px-2 py-1 rounded-lg transition-colors flex items-center gap-1"
+                          >
+                            <Eye size={12} /> 查看
+                          </button>
+                          <button
+                            onClick={() => {
+                              navigator.clipboard.writeText(entry.titles.join('\n'));
+                              alert(`已复制 ${entry.count} 条标题`);
+                            }}
+                            className="text-xs text-slate-500 hover:bg-slate-100 px-2 py-1 rounded-lg transition-colors flex items-center gap-1"
+                          >
+                            <Copy size={12} /> 复制
+                          </button>
+                          <button
+                            onClick={async () => {
+                              if (!window.confirm(`确定删除记录「${entry.name}」？`)) return;
+                              setHistoryList(prev => prev.filter(h => h.id !== entry.id));
+                              fetch(`/api/history/${entry.id}`, { method: 'DELETE' }).catch(() => {});
+                            }}
+                            className="text-slate-300 hover:text-red-500 p-1 rounded-lg transition-colors opacity-0 group-hover:opacity-100"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
 
       {/* Error Modal */}
       <AnimatePresence>

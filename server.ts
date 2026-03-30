@@ -4,6 +4,7 @@ import path from "path";
 import fs from "fs/promises";
 
 const CONFIG_FILE = path.join(process.cwd(), "config.json");
+const HISTORY_FILE = path.join(process.cwd(), "history.json");
 
 async function startServer() {
   const app = express();
@@ -29,6 +30,49 @@ async function startServer() {
       res.json({ status: "ok" });
     } catch (error) {
       res.status(500).json({ error: "Failed to save config" });
+    }
+  });
+
+  // API: Load history
+  app.get("/api/history", async (req, res) => {
+    try {
+      const data = await fs.readFile(HISTORY_FILE, "utf-8");
+      res.json(JSON.parse(data));
+    } catch (error) {
+      res.json([]);
+    }
+  });
+
+  // API: Save history entry
+  app.post("/api/history", async (req, res) => {
+    try {
+      let history: any[] = [];
+      try {
+        const data = await fs.readFile(HISTORY_FILE, "utf-8");
+        history = JSON.parse(data);
+      } catch (_) {}
+      history.unshift(req.body);
+      if (history.length > 100) history = history.slice(0, 100);
+      await fs.writeFile(HISTORY_FILE, JSON.stringify(history, null, 2));
+      res.json({ status: "ok" });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to save history" });
+    }
+  });
+
+  // API: Delete history entry
+  app.delete("/api/history/:id", async (req, res) => {
+    try {
+      let history: any[] = [];
+      try {
+        const data = await fs.readFile(HISTORY_FILE, "utf-8");
+        history = JSON.parse(data);
+      } catch (_) {}
+      history = history.filter((h: any) => h.id !== req.params.id);
+      await fs.writeFile(HISTORY_FILE, JSON.stringify(history, null, 2));
+      res.json({ status: "ok" });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to delete history" });
     }
   });
 
