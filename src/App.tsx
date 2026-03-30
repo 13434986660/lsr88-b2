@@ -18,6 +18,7 @@ import DebugPanel from './components/DebugPanel';
 
 export default function App() {
   const configLoadedRef = React.useRef(false);
+  const loadedConfigSnapshot = React.useRef('');
   const [configOpen, setConfigOpen] = useState(false);
   const [baseUrl, setBaseUrl] = useState('https://api.openai.com/v1');
   const [apiKey, setApiKey] = useState('');
@@ -90,14 +91,18 @@ export default function App() {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [viewingHistory, setViewingHistory] = useState<HistoryEntry | null>(null);
 
+  const buildConfigPayload = () => ({ baseUrl, apiKey, selectedModel, models, presets, keywords, mustIncludeKeywords });
+
   // Load config from server on mount
   useEffect(() => {
+    let cancelled = false;
     const loadConfig = async () => {
       addLog('info', '系统', '应用启动，正在加载配置...');
       try {
         const response = await fetch('/api/config');
         const text = await response.text();
         const data = text ? JSON.parse(text) : {};
+        if (cancelled) return;
         if (data.baseUrl) setBaseUrl(data.baseUrl);
         if (data.apiKey) setApiKey(data.apiKey);
         if (data.selectedModel) setSelectedModel(data.selectedModel);
@@ -106,8 +111,21 @@ export default function App() {
         if (data.keywords && Object.keys(data.keywords).length > 0) setKeywords(data.keywords);
         if (data.mustIncludeKeywords) setMustIncludeKeywords(data.mustIncludeKeywords);
         addLog('success', '系统', '配置加载完成', `模型: ${data.selectedModel || '未设置'} | API: ${data.baseUrl || '未设置'}`);
+
+        loadedConfigSnapshot.current = JSON.stringify({
+          baseUrl: data.baseUrl || 'https://api.openai.com/v1',
+          apiKey: data.apiKey || '',
+          selectedModel: data.selectedModel || 'gpt-4o',
+          models: data.models || ['gpt-3.5-turbo', 'gpt-4o', 'gpt-4-turbo'],
+          presets: data.presets || {},
+          keywords: data.keywords && Object.keys(data.keywords).length > 0
+            ? data.keywords
+            : { '风格': [], '产品功能': [], '材质': [], '品类': [], '人群': [], '场景': [] },
+          mustIncludeKeywords: data.mustIncludeKeywords || { '风格': [], '产品功能': [], '材质': [], '品类': [], '人群': [], '场景': [] },
+        });
         configLoadedRef.current = true;
       } catch (error) {
+        if (cancelled) return;
         addLog('error', '系统', '配置加载失败', error instanceof Error ? error.message : String(error));
         configLoadedRef.current = true;
       }
@@ -115,31 +133,27 @@ export default function App() {
       try {
         const hRes = await fetch('/api/history');
         const hData = await hRes.json();
-        if (Array.isArray(hData)) setHistoryList(hData);
+        if (!cancelled && Array.isArray(hData)) setHistoryList(hData);
       } catch (_) {}
     };
     loadConfig();
+    return () => { cancelled = true; };
   }, []);
 
-  const saveConfigSilent = async () => {
-    try {
-      await fetch('/api/config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ baseUrl, apiKey, selectedModel, models, presets, keywords, mustIncludeKeywords })
-      });
-    } catch (_) {}
+  const doSaveConfig = async (payload: ReturnType<typeof buildConfigPayload>) => {
+    await fetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    loadedConfigSnapshot.current = JSON.stringify(payload);
   };
 
   const saveConfig = async () => {
     setSavingConfig(true);
     addLog('info', '配置', '正在保存配置...');
     try {
-      await fetch('/api/config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ baseUrl, apiKey, selectedModel, models, presets, keywords, mustIncludeKeywords })
-      });
+      await doSaveConfig(buildConfigPayload());
       addLog('success', '配置', '配置保存成功');
       setTimeout(() => {
         setSavingConfig(false);
@@ -157,7 +171,12 @@ export default function App() {
 
   useEffect(() => {
     if (!configLoadedRef.current) return;
-    const timer = setTimeout(() => { saveConfigSilent(); }, 800);
+    const payload = buildConfigPayload();
+    const snapshot = JSON.stringify(payload);
+    if (snapshot === loadedConfigSnapshot.current) return;
+    const timer = setTimeout(() => {
+      doSaveConfig(payload).catch(() => {});
+    }, 1000);
     return () => clearTimeout(timer);
   }, [baseUrl, apiKey, selectedModel, models, keywords, mustIncludeKeywords, presets]);
 
