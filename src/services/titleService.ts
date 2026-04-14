@@ -154,7 +154,20 @@ export async function generateTitles(
   const label = '标题生成';
   const keywordsJson = JSON.stringify(keywords, null, 2);
   const mustIncludeJson = mustIncludeKeywords ? JSON.stringify(mustIncludeKeywords, null, 2) : '';
-  
+
+  // 判断品类词池是否充足：≥3个品类词视为"品类词丰富"
+  const categoryWords: string[] = Array.isArray(keywords['品类']) ? keywords['品类'] : [];
+  const richCategoryMode = categoryWords.length >= 3;
+
+  const categoryInstruction = richCategoryMode
+    ? `
+4. **品类词强化组合策略（品类词池充足，优先启用）**：
+   - 当前品类词库共 ${categoryWords.length} 个词汇，属于**品类词丰富**场景。
+   - **每个标题必须尝试融入 2 个不同的品类词**（如"拉面碗"+"大汤碗"、"马克杯"+"咖啡杯"），以覆盖更多搜索需求。
+   - **融入前提**：2个品类词的组合必须语法通顺、语感自然，读起来不生硬。若某两词确实无法自然组合，则允许只放1个，但需在其他更合适的位置补充尝试。
+   - **不可牺牲**：风格词、场景词依然是标题的必要组成，不可因追求多品类词而省去。`
+    : '';
+
   const prompt = `
 # Role: 电商黄金标题炼金专家
 # Task: 基于提供的"素材词库"，编写 ${targetCount} 个字数严格控制在 29-30 字之间的黄金标题。
@@ -171,6 +184,7 @@ export async function generateTitles(
    ${mustIncludeKeywords ? `- **强制要求**：以下"必含词库"中的词汇具有最高权重。**每个生成的标题中，必须包含对应分类下的所有必含词**。这些词汇是生成标题的核心，必须妥善安排在合适的位置。` : ''}
 
 3. **严禁重复**：同一个标题内严禁出现意思重复或完全相同的词。
+${categoryInstruction}
 
 # 强制要求：
 - **字数准则**：每个标题必须在 29-30 字。
@@ -186,7 +200,7 @@ ${mustIncludeKeywords ? `必含词库（必须出现在每个标题中）：\n${
   const proxyUrl = '/api/proxy';
   const targetUrl = `${config.baseUrl}/chat/completions`;
 
-  addLog('info', label, `请求生成 ${targetCount} 条标题，模型: ${config.model}`);
+  addLog('info', label, `请求生成 ${targetCount} 条标题，模型: ${config.model}`, richCategoryMode ? `品类词丰富模式（${categoryWords.length} 个品类词），将尝试每标题融入 2 个品类词` : `品类词普通模式（${categoryWords.length} 个品类词），按常规逻辑生成`);
 
   const { data } = await fetchWithRetry(proxyUrl, {
     url: targetUrl,
