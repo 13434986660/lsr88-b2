@@ -60,8 +60,17 @@ async function fetchWithRetry(
     try {
       data = text ? JSON.parse(text) : {};
     } catch (e) {
-      addLog('error', label, `响应 JSON 解析失败 (HTTP ${response.status}, ${elapsed}ms)`, text.slice(0, 500));
-      throw new Error("服务端返回了无效的 JSON 响应");
+      const responsePreview = text.trim().replace(/\s+/g, ' ').slice(0, 500) || '响应正文为空';
+      const errorMessage = `服务暂时不可用 (HTTP ${response.status})`;
+
+      if (RETRYABLE_STATUS.includes(response.status) && attempt < MAX_RETRIES) {
+        addLog('warn', label, `服务端返回非 JSON 响应，将重试 (HTTP ${response.status}, ${elapsed}ms)`, responsePreview);
+        lastError = new Error(errorMessage);
+        continue;
+      }
+
+      addLog('error', label, `响应 JSON 解析失败 (HTTP ${response.status}, ${elapsed}ms)`, responsePreview);
+      throw new Error(response.ok ? '服务端返回了无效的 JSON 响应' : errorMessage);
     }
 
     if (response.ok) {
@@ -235,7 +244,7 @@ ${mustIncludeKeywords ? `必含词库（必须出现在每个标题中）：\n${
   const cleanedLines = rawLines.map(sanitizeGeneratedTitle);
   const cleanedCount = cleanedLines.filter((title: string, index: number) => title !== rawLines[index]).length;
   
-  const titles = Array.from(new Set(
+  const titles: string[] = Array.from(new Set<string>(
     cleanedLines.filter((t: string) => t.length >= 29 && t.length <= 30)
   ));
 
