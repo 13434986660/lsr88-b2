@@ -9,6 +9,14 @@ export interface TitleConfig {
 const RETRYABLE_STATUS = [502, 503, 504, 429];
 const MAX_RETRIES = 3;
 const BASE_DELAY_MS = 1500;
+const TITLE_LIST_PREFIX = /^\s*(?:[-*•]+|[（(]?\s*(?:\d+|[一二三四五六七八九十]+)\s*[）).、:：])\s*/u;
+const TITLE_PUNCTUATION_OR_SPACE = /[\p{P}\p{S}\s]/gu;
+
+function sanitizeGeneratedTitle(title: string): string {
+  return title
+    .replace(TITLE_LIST_PREFIX, '')
+    .replace(TITLE_PUNCTUATION_OR_SPACE, '');
+}
 
 async function fetchWithRetry(
   proxyUrl: string,
@@ -189,6 +197,7 @@ ${categoryInstruction}
 # 强制要求：
 - **字数准则**：每个标题必须在 29-30 字。
 - **去序号化**：每行一个标题，不要加数字序号。
+- **纯文本无标点**：标题中严禁出现任何中英文标点、符号或空格（如“，”“。”“、”“！”“？”“：”“-”），只能连续输出标题文字；29-30 字必须按去除标点后的纯文字计算。
 - **品牌过滤**：严禁出现任何品牌名称。
 
 素材词库：
@@ -219,18 +228,22 @@ ${mustIncludeKeywords ? `必含词库（必须出现在每个标题中）：\n${
   }
   
   const rawContent = data.choices[0].message.content;
-  const allLines = rawContent
+  const rawLines = rawContent
     .split('\n')
     .map((t: string) => t.trim())
-    .filter((t: string) => t !== '' && t.length >= 28 && t.length <= 31);
+    .filter((t: string) => t !== '');
+  const cleanedLines = rawLines.map(sanitizeGeneratedTitle);
+  const cleanedCount = cleanedLines.filter((title: string, index: number) => title !== rawLines[index]).length;
   
-  const titles = allLines.filter((t: string) => t.length >= 29 && t.length <= 30);
+  const titles = Array.from(new Set(
+    cleanedLines.filter((t: string) => t.length >= 29 && t.length <= 30)
+  ));
 
   addLog(
     titles.length > 0 ? 'success' : 'warn',
     label,
     `本批获得 ${titles.length} 条合格标题（29-30字）`,
-    `AI 原始输出 ${rawContent.split('\n').filter((l: string) => l.trim()).length} 行，粗筛 ${allLines.length} 条（28-31字），精筛 ${titles.length} 条（29-30字）`
+    `AI 原始输出 ${rawLines.length} 行，清理标点/符号/空格 ${cleanedCount} 条，按清理后字数筛选出 ${titles.length} 条`
   );
 
   return titles;
