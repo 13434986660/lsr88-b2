@@ -12,7 +12,7 @@ import {
   History, Clock, FileText, Eye
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { countTitleCharacters, generateTitles, extractKeywords } from './services/titleService';
+import { generateTitles, extractKeywords } from './services/titleService';
 import { addLog } from './services/logService';
 import DebugPanel from './components/DebugPanel';
 
@@ -1167,7 +1167,7 @@ export default function App() {
                     <p className="text-base font-medium leading-relaxed pr-16">{title}</p>
                     <div className="absolute top-4 right-4 flex flex-col items-end gap-2">
                       <span className="text-[10px] font-mono bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded">
-                        {countTitleCharacters(title)}字
+                        {title.length}字
                       </span>
                       <button 
                         onClick={(e) => {
@@ -1587,7 +1587,7 @@ export default function App() {
                       <div key={i} className="group flex items-start gap-3 p-3 bg-slate-50 rounded-xl hover:bg-white border border-transparent hover:border-slate-200 transition-all">
                         <span className="text-[10px] text-slate-400 font-mono mt-1 shrink-0 w-5 text-right">{i + 1}</span>
                         <p className="text-sm flex-1">{title}</p>
-                        <span className="text-[10px] font-mono bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded shrink-0">{countTitleCharacters(title)}字</span>
+                        <span className="text-[10px] font-mono bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded shrink-0">{title.length}字</span>
                         <button
                           onClick={() => { navigator.clipboard.writeText(title); }}
                           className="text-slate-300 hover:text-blue-600 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
