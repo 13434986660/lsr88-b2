@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { generateTitles } from '../src/services/titleService';
+import { countTitleCharacters, generateTitles } from '../src/services/titleService';
+
+test('字符计数按Unicode字符计算，而不是UTF-16代码单元', () => {
+  assert.equal(countTitleCharacters('中'.repeat(26) + '𠀀𠀀'), 28);
+  assert.equal(countTitleCharacters('中'.repeat(29)), 29);
+  assert.equal(countTitleCharacters('中'.repeat(30)), 30);
+});
 
 test('只保留实际字符数为29到30的标题，不使用UTF-16长度误判', async () => {
   const titleWith28Characters = '中'.repeat(26) + '𠀀𠀀';
@@ -10,6 +16,29 @@ test('只保留实际字符数为29到30的标题，不使用UTF-16长度误判'
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async () => new Response(JSON.stringify({
     choices: [{ message: { content: titleWith28Characters } }]
+  }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' }
+  })) as typeof fetch;
+
+  try {
+    const titles = await generateTitles(
+      { baseUrl: 'https://example.com/v1', apiKey: 'test', model: 'test-model' },
+      { 品类: ['测试品类'], 材质: ['测试材质'] },
+      1
+    );
+
+    assert.deepEqual(titles, []);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('拒绝实际长度为55个字符的标题', async () => {
+  const titleWith55Characters = '中'.repeat(55);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => new Response(JSON.stringify({
+    choices: [{ message: { content: titleWith55Characters } }]
   }), {
     status: 200,
     headers: { 'Content-Type': 'application/json' }

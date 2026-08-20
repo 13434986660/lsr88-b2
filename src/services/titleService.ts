@@ -6,6 +6,13 @@ export interface TitleConfig {
   model: string;
 }
 
+export const MIN_TITLE_CHARACTERS = 29;
+export const MAX_TITLE_CHARACTERS = 30;
+
+export function countTitleCharacters(title: string): number {
+  return Array.from(title.normalize('NFC')).length;
+}
+
 const RETRYABLE_STATUS = [502, 503, 504, 429];
 const MAX_RETRIES = 3;
 const BASE_DELAY_MS = 1500;
@@ -187,7 +194,7 @@ export async function generateTitles(
 
   const prompt = `
 # Role: 电商黄金标题炼金专家
-# Task: 基于提供的"素材词库"，编写 ${targetCount} 个字数严格控制在 29-30 字之间的黄金标题。
+# Task: 基于提供的"素材词库"，编写 ${targetCount} 个字数严格控制在 ${MIN_TITLE_CHARACTERS}-${MAX_TITLE_CHARACTERS} 字之间的黄金标题。
 
 # 核心编写逻辑：
 1. **精准组装与深度思考（积木式构建）**：
@@ -195,7 +202,7 @@ export async function generateTitles(
    - **语感与逻辑**：虽然是组装，但绝非随意堆砌。AI 必须具备极强的"语感"，确保组装后的标题念起来顺口、流畅，逻辑连贯，像是在写一篇精炼的小短文。
    - **战略位置摆放**：AI 需深度思考每个"积木"的最佳位置。例如：功能词（食品级、耐高温等）通常放在材质前或品类后，但具体位置需根据整句的流畅度动态调整。
    - **素材限制**：必须严格从素材词库中挑选词汇，严禁自行添加素材外的内容。
-   - **字数控制**：组装后的标题字数必须严格控制在 29-30 字。
+   - **字数控制**：组装后的标题字数必须严格控制在 ${MIN_TITLE_CHARACTERS}-${MAX_TITLE_CHARACTERS} 字。
 
 2. **权重必含词（最高优先级）**：
    ${mustIncludeKeywords ? `- **强制要求**：以下"必含词库"中的词汇具有最高权重。**每个生成的标题中，必须包含对应分类下的所有必含词**。这些词汇是生成标题的核心，必须妥善安排在合适的位置。` : ''}
@@ -204,7 +211,7 @@ export async function generateTitles(
 ${categoryInstruction}
 
 # 强制要求：
-- **字数准则**：每个标题必须在 29-30 字。
+- **字数准则**：每个标题必须在 ${MIN_TITLE_CHARACTERS}-${MAX_TITLE_CHARACTERS} 字；请按 Unicode 字符逐个计数，禁止按词数、字节数或大致长度估算。
 - **去序号化**：每行一个标题，不要加数字序号。
 - **纯文本无标点**：标题中严禁出现任何中英文标点、符号或空格（如“，”“。”“、”“！”“？”“：”“-”），只能连续输出标题文字；29-30 字必须按去除标点后的纯文字计算。
 - **品牌过滤**：严禁出现任何品牌名称。
@@ -245,13 +252,16 @@ ${mustIncludeKeywords ? `必含词库（必须出现在每个标题中）：\n${
   const cleanedCount = cleanedLines.filter((title: string, index: number) => title !== rawLines[index]).length;
   
   const titles: string[] = Array.from(new Set<string>(
-    cleanedLines.filter((t: string) => t.length >= 29 && t.length <= 30)
+    cleanedLines.filter((t: string) => {
+      const characterCount = countTitleCharacters(t);
+      return characterCount >= MIN_TITLE_CHARACTERS && characterCount <= MAX_TITLE_CHARACTERS;
+    })
   ));
 
   addLog(
     titles.length > 0 ? 'success' : 'warn',
     label,
-    `本批获得 ${titles.length} 条合格标题（29-30字）`,
+    `本批获得 ${titles.length} 条合格标题（${MIN_TITLE_CHARACTERS}-${MAX_TITLE_CHARACTERS}字）`,
     `AI 原始输出 ${rawLines.length} 行，清理标点/符号/空格 ${cleanedCount} 条，按清理后字数筛选出 ${titles.length} 条`
   );
 
