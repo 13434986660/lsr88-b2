@@ -96,6 +96,78 @@ async function fetchWithRetry(
   throw lastError || new Error('All retries exhausted');
 }
 
+interface ParsedTitleBatch {
+  rawLines: string[];
+  cleanedLines: string[];
+  titles: string[];
+  shortTitles: string[];
+  longTitles: string[];
+  cleanedCount: number;
+}
+
+function parseTitleBatch(rawContent: string): ParsedTitleBatch {
+  const rawLines = rawContent
+    .split('\n')
+    .map((t: string) => t.trim())
+    .filter((t: string) => t !== '');
+  const cleanedLines = rawLines.map(sanitizeGeneratedTitle);
+  const cleanedCount = cleanedLines.filter((title: string, index: number) => title !== rawLines[index]).length;
+  const shortTitles = cleanedLines.filter((title: string) => title.length < 29);
+  const longTitles = cleanedLines.filter((title: string) => title.length > 30);
+  const titles: string[] = Array.from(new Set<string>(
+    cleanedLines.filter((title: string) => title.length >= 29 && title.length <= 30)
+  ));
+
+  return { rawLines, cleanedLines, titles, shortTitles, longTitles, cleanedCount };
+}
+
+async function repairTitleLengths(
+  config: TitleConfig,
+  invalidTitles: string[],
+  keywordsJson: string,
+  mustIncludeJson: string,
+  hasMustIncludeKeywords: boolean
+): Promise<string[]> {
+  const label = '标题长度校正';
+  const repairPrompt = `
+# Task: 对以下候选标题进行二次长度校正
+# 目标：每条标题清理标点、符号和空格后，必须严格为29-30字。
+
+# 校正规则：
+1. 过长标题：优先删除普通素材词、第二个品类词以及可选的风格词或场景词；必须保留材质词、至少1个品类词和全部必含词。
+2. 过短标题：从素材词库中选择最自然且未重复的词补足字数，不要堆叠无关词。
+3. 只允许使用素材词库中的词，禁止添加品牌和营销词。
+4. 输出数量必须与输入候选数量一致，每行一个标题，不要序号、解释或标点。
+5. 输出前逐条重新计数，不合格的标题继续在内部调整后再输出。
+
+待校正候选：
+${invalidTitles.map((title, index) => `${index + 1}. ${title}（当前${title.length}字，${title.length > 30 ? '过长' : '过短'}）`).join('\n')}
+
+素材词库：
+${keywordsJson}
+
+${hasMustIncludeKeywords ? `必含词库（每条必须保留）：\n${mustIncludeJson}` : ''}
+`;
+
+  const { data } = await fetchWithRetry('/api/proxy', {
+    url: `${config.baseUrl}/chat/completions`,
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${config.apiKey}` },
+    body: {
+      model: config.model,
+      messages: [{ role: 'user', content: repairPrompt }],
+      temperature: 0.2
+    }
+  }, label);
+
+  if (!data.choices || data.choices.length === 0) {
+    addLog('warn', label, '校正接口未返回有效候选标题');
+    return [];
+  }
+
+  return parseTitleBatch(data.choices[0].message.content).titles;
+}
+
 export async function extractKeywords(
   config: TitleConfig,
   rawTitles: string
@@ -254,25 +326,33 @@ ${hasMustIncludeKeywords ? `必含词库（必须出现在每个标题中）：\
     throw new Error(data.error?.message || 'No choices found in API response');
   }
   
-  const rawContent = data.choices[0].message.content;
-  const rawLines = rawContent
-    .split('\n')
-    .map((t: string) => t.trim())
-    .filter((t: string) => t !== '');
-  const cleanedLines = rawLines.map(sanitizeGeneratedTitle);
-  const cleanedCount = cleanedLines.filter((title: string, index: number) => title !== rawLines[index]).length;
-  const shortCount = cleanedLines.filter((title: string) => title.length < 29).length;
-  const longCount = cleanedLines.filter((title: string) => title.length > 30).length;
-  
-  const titles: string[] = Array.from(new Set<string>(
-    cleanedLines.filter((t: string) => t.length >= 29 && t.length <= 30)
-  ));
+  const initialBatch = parseTitleBatch(data.choices[0].message.content);
+  const invalidTitles = Array.from(new Set<string>([
+    ...initialBatch.shortTitles,
+    ...initialBatch.longTitles
+  ]));
+  let titles = initialBatch.titles;
+  let repairedCount = 0;
+
+  if (invalidTitles.length > 0 && titles.length < targetCount) {
+    const repairCandidates = invalidTitles.slice(0, targetCount - titles.length);
+    const repairedTitles = await repairTitleLengths(
+      config,
+      repairCandidates,
+      keywordsJson,
+      mustIncludeJson,
+      hasMustIncludeKeywords
+    );
+    const mergedTitles = Array.from(new Set<string>([...titles, ...repairedTitles]));
+    repairedCount = mergedTitles.length - titles.length;
+    titles = mergedTitles.slice(0, targetCount);
+  }
 
   addLog(
     titles.length > 0 ? 'success' : 'warn',
     label,
     `本批获得 ${titles.length} 条合格标题（29-30字）`,
-    `AI 原始输出 ${rawLines.length} 行，清理标点/符号/空格 ${cleanedCount} 条，过短 ${shortCount} 条，过长 ${longCount} 条，按清理后字数筛选出 ${titles.length} 条`
+    `AI 原始输出 ${initialBatch.rawLines.length} 行，清理标点/符号/空格 ${initialBatch.cleanedCount} 条，过短 ${initialBatch.shortTitles.length} 条，过长 ${initialBatch.longTitles.length} 条，初次合格 ${initialBatch.titles.length} 条，校正新增 ${repairedCount} 条`
   );
 
   return titles;
