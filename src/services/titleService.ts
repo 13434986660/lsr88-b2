@@ -170,7 +170,24 @@ export async function generateTitles(
 ): Promise<string[]> {
   const label = '标题生成';
   const keywordsJson = JSON.stringify(keywords, null, 2);
-  const mustIncludeJson = mustIncludeKeywords ? JSON.stringify(mustIncludeKeywords, null, 2) : '';
+  const activeMustIncludeKeywords = Object.fromEntries(
+    Object.entries(mustIncludeKeywords || {}).filter(([, words]) =>
+      Array.isArray(words) && words.some(word => typeof word === 'string' && word.trim() !== '')
+    )
+  ) as Record<string, string[]>;
+  const mustIncludeWords = Object.values(activeMustIncludeKeywords).flat().map(word => word.trim()).filter(Boolean);
+  const hasMustIncludeKeywords = mustIncludeWords.length > 0;
+  const mustIncludeLength = mustIncludeWords.join('').length;
+
+  if (mustIncludeLength > 30) {
+    const message = `必含词总长度超过30字（当前 ${mustIncludeLength} 字），无法同时满足标题长度要求`;
+    addLog('error', label, message, mustIncludeWords.join(' | '));
+    throw new Error(message);
+  }
+
+  const mustIncludeJson = hasMustIncludeKeywords
+    ? JSON.stringify(activeMustIncludeKeywords, null, 2)
+    : '';
 
   // 判断品类词池是否充足：≥3个品类词视为"品类词丰富"
   const categoryWords: string[] = Array.isArray(keywords['品类']) ? keywords['品类'] : [];
@@ -180,9 +197,8 @@ export async function generateTitles(
     ? `
 4. **品类词强化组合策略（品类词池充足，优先启用）**：
    - 当前品类词库共 ${categoryWords.length} 个词汇，属于**品类词丰富**场景。
-   - **每个标题必须尝试融入 2 个不同的品类词**（如"拉面碗"+"大汤碗"、"马克杯"+"咖啡杯"），以覆盖更多搜索需求。
-   - **融入前提**：2个品类词的组合必须语法通顺、语感自然，读起来不生硬。若某两词确实无法自然组合，则允许只放1个，但需在其他更合适的位置补充尝试。
-   - **不可牺牲**：风格词、场景词依然是标题的必要组成，不可因追求多品类词而省去。`
+   - **品类词最多使用2个，默认选择1个**；只有在语法自然且字数允许时才使用第2个。
+   - **字数优先于词汇覆盖**：如果加入第2个品类词会导致超过30字，必须放弃第2个品类词。`
     : '';
 
   const prompt = `
@@ -194,13 +210,15 @@ export async function generateTitles(
    - **积木式构建**：将素材词库中的词汇视为"积木"，通过精准的组装来构建标题。
    - **语感与逻辑**：虽然是组装，但绝非随意堆砌。AI 必须具备极强的"语感"，确保组装后的标题念起来顺口、流畅，逻辑连贯，像是在写一篇精炼的小短文。
    - **战略位置摆放**：AI 需深度思考每个"积木"的最佳位置。例如：功能词（食品级、耐高温等）通常放在材质前或品类后，但具体位置需根据整句的流畅度动态调整。
+   - **候选词策略**：普通素材词库仅作为候选，每条标题只选择4-7个最合适的词，不要求覆盖全部词库，也禁止堆叠所有素材。
    - **素材限制**：必须严格从素材词库中挑选词汇，严禁自行添加素材外的内容。
    - **字数控制**：组装后的标题字数必须严格控制在 29-30 字。
 
 2. **权重必含词（最高优先级）**：
-   ${mustIncludeKeywords ? `- **强制要求**：以下"必含词库"中的词汇具有最高权重。**每个生成的标题中，必须包含对应分类下的所有必含词**。这些词汇是生成标题的核心，必须妥善安排在合适的位置。` : ''}
+   ${hasMustIncludeKeywords ? `- **强制要求**：以下"必含词库"中的词汇具有最高权重。**每个生成的标题中，必须包含对应分类下的所有必含词**。这些词汇是生成标题的核心，必须妥善安排在合适的位置。` : ''}
 
 3. **严禁重复**：同一个标题内严禁出现意思重复或完全相同的词。
+   - **风格词和场景词如有合适词可优先选择，不做硬性必含**；如果会导致超过30字，可以省略。
 ${categoryInstruction}
 
 # 强制要求：
@@ -212,13 +230,13 @@ ${categoryInstruction}
 素材词库：
 ${keywordsJson}
 
-${mustIncludeKeywords ? `必含词库（必须出现在每个标题中）：\n${mustIncludeJson}` : ''}
+${hasMustIncludeKeywords ? `必含词库（必须出现在每个标题中）：\n${mustIncludeJson}` : ''}
 `;
 
   const proxyUrl = '/api/proxy';
   const targetUrl = `${config.baseUrl}/chat/completions`;
 
-  addLog('info', label, `请求生成 ${targetCount} 条标题，模型: ${config.model}`, richCategoryMode ? `品类词丰富模式（${categoryWords.length} 个品类词），将尝试每标题融入 2 个品类词` : `品类词普通模式（${categoryWords.length} 个品类词），按常规逻辑生成`);
+  addLog('info', label, `请求生成 ${targetCount} 条标题，模型: ${config.model}`, richCategoryMode ? `品类词丰富模式（${categoryWords.length} 个品类词），每标题最多使用 2 个，默认使用 1 个` : `品类词普通模式（${categoryWords.length} 个品类词），按常规逻辑生成`);
 
   const { data } = await fetchWithRetry(proxyUrl, {
     url: targetUrl,
@@ -227,7 +245,7 @@ ${mustIncludeKeywords ? `必含词库（必须出现在每个标题中）：\n${
     body: {
       model: config.model,
       messages: [{ role: 'user', content: prompt }],
-      temperature: 0.8
+      temperature: 0.35
     }
   }, label);
 
@@ -243,6 +261,8 @@ ${mustIncludeKeywords ? `必含词库（必须出现在每个标题中）：\n${
     .filter((t: string) => t !== '');
   const cleanedLines = rawLines.map(sanitizeGeneratedTitle);
   const cleanedCount = cleanedLines.filter((title: string, index: number) => title !== rawLines[index]).length;
+  const shortCount = cleanedLines.filter((title: string) => title.length < 29).length;
+  const longCount = cleanedLines.filter((title: string) => title.length > 30).length;
   
   const titles: string[] = Array.from(new Set<string>(
     cleanedLines.filter((t: string) => t.length >= 29 && t.length <= 30)
@@ -252,7 +272,7 @@ ${mustIncludeKeywords ? `必含词库（必须出现在每个标题中）：\n${
     titles.length > 0 ? 'success' : 'warn',
     label,
     `本批获得 ${titles.length} 条合格标题（29-30字）`,
-    `AI 原始输出 ${rawLines.length} 行，清理标点/符号/空格 ${cleanedCount} 条，按清理后字数筛选出 ${titles.length} 条`
+    `AI 原始输出 ${rawLines.length} 行，清理标点/符号/空格 ${cleanedCount} 条，过短 ${shortCount} 条，过长 ${longCount} 条，按清理后字数筛选出 ${titles.length} 条`
   );
 
   return titles;

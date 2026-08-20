@@ -316,6 +316,21 @@ export default function App() {
       return;
     }
 
+    const mustIncludeWords = Object.values(mustIncludeKeywords)
+      .flat()
+      .map(word => word.trim())
+      .filter(Boolean);
+    const mustIncludeLength = mustIncludeWords.join('').length;
+
+    if (mustIncludeLength > 30) {
+      addLog('warn', '生成', `必含词总长度超过30字: ${mustIncludeLength} 字`);
+      setGlobalError({
+        title: '必含词过多',
+        message: `当前必含词合计 ${mustIncludeLength} 字，无法同时放入29-30字标题。请减少必含词后再生成。`
+      });
+      return;
+    }
+
     const allWords = Object.values(keywords).flat();
     const totalLength = allWords.join('').length;
     
