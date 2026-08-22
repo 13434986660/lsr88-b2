@@ -100,48 +100,140 @@ interface ParsedTitleBatch {
   rawLines: string[];
   cleanedLines: string[];
   titles: string[];
+  invalidTitles: InvalidTitle[];
   shortTitles: string[];
   longTitles: string[];
+  outsideTitles: string[];
+  missingMustIncludeTitles: string[];
   cleanedCount: number;
 }
 
-function parseTitleBatch(rawContent: string): ParsedTitleBatch {
+type InvalidTitleReason = '过短' | '过长' | '词库外内容' | '缺少必含词';
+
+interface InvalidTitle {
+  title: string;
+  reasons: InvalidTitleReason[];
+}
+
+function collectAllowedWords(
+  keywords: Record<string, string[]>,
+  mustIncludeKeywords: Record<string, string[]>
+): string[] {
+  return Array.from(new Set<string>(
+    [keywords, mustIncludeKeywords]
+      .flatMap(source => Object.values(source))
+      .flatMap(words => Array.isArray(words) ? words : [])
+      .map(word => typeof word === 'string' ? word.trim() : '')
+      .filter(Boolean)
+  ));
+}
+
+function isComposedOfAllowedWords(title: string, allowedWords: string[]): boolean {
+  const candidates = allowedWords
+    .filter(word => title.includes(word))
+    .sort((left, right) => right.length - left.length);
+  const failedStates = new Set<string>();
+
+  function matchFrom(position: number, usedWords: Set<string>): boolean {
+    if (position === title.length) return true;
+
+    const stateKey = `${position}:${Array.from(usedWords).sort().join('\u0000')}`;
+    if (failedStates.has(stateKey)) return false;
+
+    for (const word of candidates) {
+      if (usedWords.has(word) || !title.startsWith(word, position)) continue;
+
+      usedWords.add(word);
+      if (matchFrom(position + word.length, usedWords)) return true;
+      usedWords.delete(word);
+    }
+
+    failedStates.add(stateKey);
+    return false;
+  }
+
+  return title !== '' && matchFrom(0, new Set<string>());
+}
+
+function getInvalidTitleReasons(
+  title: string,
+  allowedWords: string[],
+  mustIncludeWords: string[]
+): InvalidTitleReason[] {
+  const reasons: InvalidTitleReason[] = [];
+
+  if (title.length < 29) reasons.push('过短');
+  if (title.length > 30) reasons.push('过长');
+  if (!isComposedOfAllowedWords(title, allowedWords)) reasons.push('词库外内容');
+  if (mustIncludeWords.some(word => !title.includes(word))) reasons.push('缺少必含词');
+
+  return reasons;
+}
+
+function parseTitleBatch(
+  rawContent: string,
+  allowedWords: string[],
+  mustIncludeWords: string[]
+): ParsedTitleBatch {
   const rawLines = rawContent
     .split('\n')
     .map((t: string) => t.trim())
     .filter((t: string) => t !== '');
   const cleanedLines = rawLines.map(sanitizeGeneratedTitle);
   const cleanedCount = cleanedLines.filter((title: string, index: number) => title !== rawLines[index]).length;
-  const shortTitles = cleanedLines.filter((title: string) => title.length < 29);
-  const longTitles = cleanedLines.filter((title: string) => title.length > 30);
-  const titles: string[] = Array.from(new Set<string>(
-    cleanedLines.filter((title: string) => title.length >= 29 && title.length <= 30)
-  ));
+  const invalidTitles = cleanedLines
+    .map(title => ({ title, reasons: getInvalidTitleReasons(title, allowedWords, mustIncludeWords) }))
+    .filter(candidate => candidate.reasons.length > 0);
+  const invalidTitleSet = new Set(invalidTitles.map(candidate => candidate.title));
+  const titles = Array.from(new Set<string>(cleanedLines.filter(title => !invalidTitleSet.has(title))));
+  const shortTitles = invalidTitles.filter(candidate => candidate.reasons.includes('过短')).map(candidate => candidate.title);
+  const longTitles = invalidTitles.filter(candidate => candidate.reasons.includes('过长')).map(candidate => candidate.title);
+  const outsideTitles = invalidTitles.filter(candidate => candidate.reasons.includes('词库外内容')).map(candidate => candidate.title);
+  const missingMustIncludeTitles = invalidTitles.filter(candidate => candidate.reasons.includes('缺少必含词')).map(candidate => candidate.title);
 
-  return { rawLines, cleanedLines, titles, shortTitles, longTitles, cleanedCount };
+  return {
+    rawLines,
+    cleanedLines,
+    titles,
+    invalidTitles,
+    shortTitles,
+    longTitles,
+    outsideTitles,
+    missingMustIncludeTitles,
+    cleanedCount
+  };
 }
 
-async function repairTitleLengths(
+async function repairInvalidTitles(
   config: TitleConfig,
-  invalidTitles: string[],
+  invalidTitles: InvalidTitle[],
   keywordsJson: string,
   mustIncludeJson: string,
-  hasMustIncludeKeywords: boolean
+  hasMustIncludeKeywords: boolean,
+  categoryInstruction: string,
+  allowedWords: string[],
+  mustIncludeWords: string[]
 ): Promise<string[]> {
-  const label = '标题长度校正';
+  const label = '标题重新组合';
   const repairPrompt = `
-# Task: 对以下候选标题进行二次长度校正
-# 目标：每条标题清理标点、符号和空格后，必须严格为29-30字。
+# Task: 按黄金标题组合逻辑重新组合以下不合格候选
+# 目标：重新选择和排列素材词积木，使每条标题自然流畅，并在清理标点、符号和空格后严格为29-30字。
 
-# 校正规则：
-1. 过长标题：优先删除普通素材词、第二个品类词以及可选的风格词或场景词；必须保留材质词、至少1个品类词和全部必含词。
-2. 过短标题：从素材词库中选择最自然且未重复的词补足字数，不要堆叠无关词。
-3. 只允许使用素材词库中的词，禁止添加品牌和营销词。
-4. 输出数量必须与输入候选数量一致，每行一个标题，不要序号、解释或标点。
-5. 输出前逐条重新计数，不合格的标题继续在内部调整后再输出。
+# 黄金标题组合逻辑：
+1. 将素材词库中的完整词汇视为积木，根据语义和语感重新排列，禁止机械截断或随意堆砌。
+2. 只能完整使用素材词库及必含词库中的词，禁止拆词、改词、添加连接词、品牌词或营销词。
+3. 必含词具有最高优先级，每条标题必须保留全部必含词。
+4. 同一标题不能重复使用相同或同义词。
+${categoryInstruction ? `5. **品类词强化组合策略（品类词池充足，优先启用）**：\n${categoryInstruction}` : ''}
+6. 过长时重新选择更合适的词和排列方式，不固定删除任何一类词。
+7. 过短时从素材词库中补充语义自然且未重复的完整词，不添加词库外内容。
+8. 出现词库外内容时，必须舍弃词库外内容并使用现有素材词重新组合。
+9. 风格词、场景词依然是标题的必要组成，不能为了凑字数随意牺牲。
+10. 输出数量必须与输入候选数量一致，每行一个标题，不要序号、解释、标点或空格。
+11. 输出前逐条重新计数和检查词汇来源，不合格的标题继续在内部调整后再输出。
 
-待校正候选：
-${invalidTitles.map((title, index) => `${index + 1}. ${title}（当前${title.length}字，${title.length > 30 ? '过长' : '过短'}）`).join('\n')}
+待重新组合候选：
+${invalidTitles.map((candidate, index) => `${index + 1}. ${candidate.title}（当前${candidate.title.length}字；问题：${candidate.reasons.join('、')}）`).join('\n')}
 
 素材词库：
 ${keywordsJson}
@@ -165,7 +257,7 @@ ${hasMustIncludeKeywords ? `必含词库（每条必须保留）：\n${mustInclu
     return [];
   }
 
-  return parseTitleBatch(data.choices[0].message.content).titles;
+  return parseTitleBatch(data.choices[0].message.content, allowedWords, mustIncludeWords).titles;
 }
 
 export async function extractKeywords(
@@ -260,6 +352,7 @@ export async function generateTitles(
   const mustIncludeJson = hasMustIncludeKeywords
     ? JSON.stringify(activeMustIncludeKeywords, null, 2)
     : '';
+  const allowedWords = collectAllowedWords(keywords, activeMustIncludeKeywords);
 
   // 判断品类词池是否充足：≥3个品类词视为"品类词丰富"
   const categoryWords: string[] = Array.isArray(keywords['品类']) ? keywords['品类'] : [];
@@ -267,10 +360,10 @@ export async function generateTitles(
 
   const categoryInstruction = richCategoryMode
     ? `
-4. **品类词强化组合策略（品类词池充足，优先启用）**：
    - 当前品类词库共 ${categoryWords.length} 个词汇，属于**品类词丰富**场景。
-   - **品类词最多使用2个，默认选择1个**；只有在语法自然且字数允许时才使用第2个。
-   - **字数优先于词汇覆盖**：如果加入第2个品类词会导致超过30字，必须放弃第2个品类词。`
+   - **每个标题必须尝试融入 2 个不同的品类词**（如"拉面碗"+"大汤碗"、"马克杯"+"咖啡杯"），以覆盖更多搜索需求。
+   - **融入前提**：2个品类词的组合必须语法通顺、语感自然，读起来不生硬。若某两词确实无法自然组合，则允许只放1个，但需在其他更合适的位置补充尝试。
+   - **不可牺牲**：风格词、场景词依然是标题的必要组成，不可因追求多品类词而省去。`
     : '';
 
   const prompt = `
@@ -282,16 +375,14 @@ export async function generateTitles(
    - **积木式构建**：将素材词库中的词汇视为"积木"，通过精准的组装来构建标题。
    - **语感与逻辑**：虽然是组装，但绝非随意堆砌。AI 必须具备极强的"语感"，确保组装后的标题念起来顺口、流畅，逻辑连贯，像是在写一篇精炼的小短文。
    - **战略位置摆放**：AI 需深度思考每个"积木"的最佳位置。例如：功能词（食品级、耐高温等）通常放在材质前或品类后，但具体位置需根据整句的流畅度动态调整。
-   - **候选词策略**：普通素材词库仅作为候选，每条标题只选择4-7个最合适的词，不要求覆盖全部词库，也禁止堆叠所有素材。
-   - **素材限制**：必须严格从素材词库中挑选词汇，严禁自行添加素材外的内容。
+   - **素材限制**：必须严格从素材词库中挑选完整词汇，严禁拆词、改词或自行添加素材外的内容。
    - **字数控制**：组装后的标题字数必须严格控制在 29-30 字。
 
 2. **权重必含词（最高优先级）**：
    ${hasMustIncludeKeywords ? `- **强制要求**：以下"必含词库"中的词汇具有最高权重。**每个生成的标题中，必须包含对应分类下的所有必含词**。这些词汇是生成标题的核心，必须妥善安排在合适的位置。` : ''}
 
 3. **严禁重复**：同一个标题内严禁出现意思重复或完全相同的词。
-   - **风格词和场景词如有合适词可优先选择，不做硬性必含**；如果会导致超过30字，可以省略。
-${categoryInstruction}
+${categoryInstruction ? `4. **品类词强化组合策略（品类词池充足，优先启用）**：\n${categoryInstruction}` : ''}
 
 # 强制要求：
 - **字数准则**：每个标题必须在 29-30 字。
@@ -308,7 +399,7 @@ ${hasMustIncludeKeywords ? `必含词库（必须出现在每个标题中）：\
   const proxyUrl = '/api/proxy';
   const targetUrl = `${config.baseUrl}/chat/completions`;
 
-  addLog('info', label, `请求生成 ${targetCount} 条标题，模型: ${config.model}`, richCategoryMode ? `品类词丰富模式（${categoryWords.length} 个品类词），每标题最多使用 2 个，默认使用 1 个` : `品类词普通模式（${categoryWords.length} 个品类词），按常规逻辑生成`);
+  addLog('info', label, `请求生成 ${targetCount} 条标题，模型: ${config.model}`, richCategoryMode ? `品类词丰富模式（${categoryWords.length} 个品类词），将尝试每标题融入 2 个品类词` : `品类词普通模式（${categoryWords.length} 个品类词），按常规逻辑生成`);
 
   const { data } = await fetchWithRetry(proxyUrl, {
     url: targetUrl,
@@ -317,7 +408,7 @@ ${hasMustIncludeKeywords ? `必含词库（必须出现在每个标题中）：\
     body: {
       model: config.model,
       messages: [{ role: 'user', content: prompt }],
-      temperature: 0.35
+      temperature: 0.8
     }
   }, label);
 
@@ -326,22 +417,24 @@ ${hasMustIncludeKeywords ? `必含词库（必须出现在每个标题中）：\
     throw new Error(data.error?.message || 'No choices found in API response');
   }
   
-  const initialBatch = parseTitleBatch(data.choices[0].message.content);
-  const invalidTitles = Array.from(new Set<string>([
-    ...initialBatch.shortTitles,
-    ...initialBatch.longTitles
-  ]));
+  const initialBatch = parseTitleBatch(data.choices[0].message.content, allowedWords, mustIncludeWords);
+  const invalidTitles = Array.from(
+    new Map(initialBatch.invalidTitles.map(candidate => [candidate.title, candidate])).values()
+  );
   let titles = initialBatch.titles;
   let repairedCount = 0;
 
   if (invalidTitles.length > 0 && titles.length < targetCount) {
     const repairCandidates = invalidTitles.slice(0, targetCount - titles.length);
-    const repairedTitles = await repairTitleLengths(
+    const repairedTitles = await repairInvalidTitles(
       config,
       repairCandidates,
       keywordsJson,
       mustIncludeJson,
-      hasMustIncludeKeywords
+      hasMustIncludeKeywords,
+      categoryInstruction,
+      allowedWords,
+      mustIncludeWords
     );
     const mergedTitles = Array.from(new Set<string>([...titles, ...repairedTitles]));
     repairedCount = mergedTitles.length - titles.length;
@@ -352,7 +445,7 @@ ${hasMustIncludeKeywords ? `必含词库（必须出现在每个标题中）：\
     titles.length > 0 ? 'success' : 'warn',
     label,
     `本批获得 ${titles.length} 条合格标题（29-30字）`,
-    `AI 原始输出 ${initialBatch.rawLines.length} 行，清理标点/符号/空格 ${initialBatch.cleanedCount} 条，过短 ${initialBatch.shortTitles.length} 条，过长 ${initialBatch.longTitles.length} 条，初次合格 ${initialBatch.titles.length} 条，校正新增 ${repairedCount} 条`
+    `AI 原始输出 ${initialBatch.rawLines.length} 行，清理标点/符号/空格 ${initialBatch.cleanedCount} 条，过短 ${initialBatch.shortTitles.length} 条，过长 ${initialBatch.longTitles.length} 条，词库外 ${initialBatch.outsideTitles.length} 条，缺少必含词 ${initialBatch.missingMustIncludeTitles.length} 条，初次合格 ${initialBatch.titles.length} 条，重新组合新增 ${repairedCount} 条`
   );
 
   return titles;
