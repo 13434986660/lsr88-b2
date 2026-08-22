@@ -4,15 +4,15 @@ import { generateTitles } from '../src/services/titleService';
 
 const config = { baseUrl: 'https://example.com/v1', apiKey: 'test', model: 'test-model' };
 const keywords = {
-  风格: ['简约'],
-  材质: ['陶瓷'],
-  品类: ['拉面碗', '大汤碗', '泡面碗'],
+  风格: ['风风风风'],
+  材质: ['材材材材材'],
+  品类: ['甲甲甲甲甲甲', '乙乙乙乙乙乙', '丙丙丙丙丙丙'],
   人群: [],
-  场景: ['厨房']
+  场景: ['景景景景景景景景']
 };
-const validTitle = '中'.repeat(29);
+const validTitle = '风风风风材材材材材甲甲甲甲甲甲乙乙乙乙乙乙景景景景景景景景';
 
-test('大词库提示词把普通素材作为候选，避免强制堆叠', async () => {
+test('提示词保持原黄金标题积木组合和双品类强化规则', async () => {
   let requestBody: any;
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (_input, init) => {
@@ -33,11 +33,13 @@ test('大词库提示词把普通素材作为候选，避免强制堆叠', async
     });
 
     const prompt = requestBody.body.messages[0].content as string;
-    assert.match(prompt, /普通素材词库仅作为候选/);
-    assert.match(prompt, /品类词最多使用2个/);
-    assert.match(prompt, /风格词和场景词.*不做硬性必含/);
+    assert.match(prompt, /积木式构建/);
+    assert.match(prompt, /每个标题必须尝试融入 2 个不同的品类词/);
+    assert.match(prompt, /风格词、场景词依然是标题的必要组成/);
+    assert.doesNotMatch(prompt, /只选择4-7个/);
+    assert.doesNotMatch(prompt, /不做硬性必含/);
     assert.doesNotMatch(prompt, /必含词库（必须出现在每个标题中）/);
-    assert.equal(requestBody.body.temperature, 0.35);
+    assert.equal(requestBody.body.temperature, 0.8);
   } finally {
     globalThis.fetch = originalFetch;
   }
